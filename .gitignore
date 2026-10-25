@@ -44,3 +44,4 @@ Thumbs.db
 *.aiff
 temp/
 output/
+report.*.json
