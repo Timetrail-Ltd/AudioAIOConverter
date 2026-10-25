@@ -28,6 +28,7 @@ class MediaInfo:
     title: Optional[str] = None
     artist: Optional[str] = None
     album: Optional[str] = None
+    file_size: int = 0  # bájt
 
 
 def find_ffmpeg() -> str:
@@ -68,6 +69,25 @@ def find_ffprobe() -> str:
         return str(local_bin)
     
     raise FFmpegNotFoundError("FFprobe nem található.")
+
+
+def find_ffplay() -> str:
+    """Megkeresi az ffplay futtatható fájlt."""
+    ffplay_path = shutil.which("ffplay")
+    if ffplay_path:
+        return ffplay_path
+
+    env_path = os.environ.get("AUDIOCONVERTER_FFMPEG_DIR")
+    if env_path:
+        candidate = Path(env_path) / "ffplay.exe"
+        if candidate.exists():
+            return str(candidate)
+
+    local_bin = Path(__file__).parent.parent.parent / "bin" / "ffplay.exe"
+    if local_bin.exists():
+        return str(local_bin)
+
+    raise FFmpegNotFoundError("FFplay nem található.")
 
 
 def get_available_encoders() -> dict[str, list[str]]:
@@ -140,7 +160,8 @@ def probe_media_info(file_path: str) -> MediaInfo:
     cmd = [
         ffprobe,
         "-v", "error",
-        "-show_entries", "format=duration,bit_rate:format_tags=title,artist,album:streams=codec_name,sample_rate,channels,bits_per_raw_sample",
+        "-select_streams", "a:0",
+        "-show_entries", "format=duration,bit_rate,size:format_tags=title,artist,album:stream=codec_name,sample_rate,channels,bits_per_raw_sample,bits_per_sample:stream_tags=title,artist,album",
         "-of", "default=noprint_wrappers=1",
         file_path,
     ]
@@ -160,10 +181,12 @@ def probe_media_info(file_path: str) -> MediaInfo:
     data = {
         "duration": 0.0,
         "bit_rate": 0,
+        "size": 0,
         "codec_name": "",
         "sample_rate": 0,
         "channels": 0,
         "bits_per_raw_sample": None,
+        "bits_per_sample": None,
         "title": None,
         "artist": None,
         "album": None,
@@ -186,6 +209,11 @@ def probe_media_info(file_path: str) -> MediaInfo:
                 data["bit_rate"] = int(value)
             except ValueError:
                 data["bit_rate"] = 0
+        elif key == "size":
+            try:
+                data["size"] = int(value)
+            except ValueError:
+                data["size"] = 0
         elif key == "codec_name":
             data["codec_name"] = value
         elif key == "sample_rate":
@@ -200,16 +228,34 @@ def probe_media_info(file_path: str) -> MediaInfo:
                 data["channels"] = 0
         elif key == "bits_per_raw_sample":
             try:
-                data["bits_per_raw_sample"] = int(value) if value != "N/A" else None
+                val = int(value) if value != "N/A" else None
+                if val and val > 0:
+                    data["bits_per_raw_sample"] = val
             except ValueError:
                 data["bits_per_raw_sample"] = None
-        elif key == "TAG:title":
-            data["title"] = value or None
-        elif key == "TAG:artist":
-            data["artist"] = value or None
-        elif key == "TAG:album":
-            data["album"] = value or None
-    
+        elif key == "bits_per_sample":
+            try:
+                val = int(value) if value != "N/A" else None
+                if val and val > 0:
+                    data["bits_per_sample"] = val
+            except ValueError:
+                data["bits_per_sample"] = None
+        elif key.lower() in ("tag:title", "tag:artist", "tag:album"):
+            # Tags live in the container (mp3, flac, m4a, ...) or in the audio
+            # stream (ogg, opus); the first non-empty value wins.
+            name = key.lower().split(":", 1)[1]
+            if value and data[name] is None:
+                data[name] = value
+
+    file_size = data["size"]
+    if not file_size and os.path.isfile(file_path):
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError:
+            file_size = 0
+
+    bit_depth = data["bits_per_raw_sample"] or data["bits_per_sample"]
+
     return MediaInfo(
         path=file_path,
         format_name=Path(file_path).suffix.lstrip(".").lower(),
@@ -218,10 +264,11 @@ def probe_media_info(file_path: str) -> MediaInfo:
         audio_codec=data["codec_name"],
         sample_rate=data["sample_rate"],
         channels=data["channels"],
-        bit_depth=data["bits_per_raw_sample"],
+        bit_depth=bit_depth,
         title=data["title"],
         artist=data["artist"],
         album=data["album"],
+        file_size=file_size,
     )
 
 

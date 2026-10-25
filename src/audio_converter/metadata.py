@@ -16,6 +16,7 @@ def read_metadata(file_path: str) -> dict:
         "-v", "quiet",
         "-print_format", "json",
         "-show_format",
+        "-show_streams",
         file_path,
     ]
 
@@ -36,7 +37,17 @@ def read_metadata(file_path: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
-    tags = data.get("format", {}).get("tags") or {}
+    # Tags are stored in the container for most formats, but in the audio
+    # stream for ogg/opus. Container tags take priority.
+    tags = {}
+    sources = [data.get("format", {}).get("tags") or {}]
+    for stream in data.get("streams") or []:
+        if stream.get("codec_type") == "audio":
+            sources.append(stream.get("tags") or {})
+            break
+    for source in sources:
+        for key, value in source.items():
+            tags.setdefault(key.lower(), value)
 
     metadata = {}
     key_map = {
